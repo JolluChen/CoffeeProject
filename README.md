@@ -175,22 +175,22 @@ $$D_{i,d} = \sum_{j \in \text{饮品}} (S_{j,d} \times R_{i,j})$$
 
 ```python
 def solve_ordering_plan(demand, standard_costs, thursday_discount_rate, holding_costs):
-    """Solves the LP model for material ordering using provided cost parameters."""
+    """使用提供的成本参数求解物料订购的线性规划模型。"""
 
-    # Calculate Thursday costs based on the discount rate
+    # 根据折扣率计算周四成本
     thursday_costs = {k: v * (1 - thursday_discount_rate) for k, v in standard_costs.items()}
 
-    # Create effective cost dictionary: cost[ingredient][day]
+    # 创建有效成本字典：cost[ingredient][day]
     effective_cost = {}
     for ing in INGREDIENTS:
         effective_cost[ing] = {}
         for day in DAYS:
             effective_cost[ing][day] = thursday_costs[ing] if day == 3 else standard_costs[ing]
 
-    # Create the minimization problem
+    # 创建最小化问题
     prob = pulp.LpProblem("Material_Ordering_Plan", pulp.LpMinimize)
 
-    # Define Decision Variables
+    # 定义决策变量
     order_vars = pulp.LpVariable.dicts("Order",
                                      ((ing, day) for ing in INGREDIENTS for day in DAYS),
                                      lowBound=0, cat='Continuous')
@@ -198,13 +198,13 @@ def solve_ordering_plan(demand, standard_costs, thursday_discount_rate, holding_
                                          ((ing, day) for ing in INGREDIENTS for day in DAYS),
                                          lowBound=0, cat='Continuous')
 
-    # Define Objective Function - using passed holding_costs and calculated effective_cost
+    # 定义目标函数 - 使用传入的库存持有成本和计算出的有效成本
     prob += pulp.lpSum(effective_cost[ing][day] * order_vars[ing, day] for ing in INGREDIENTS for day in DAYS) + \
             pulp.lpSum(holding_costs[ing] * inventory_vars[ing, day] for ing in INGREDIENTS for day in DAYS), \
             "Total Cost"
 
-    # Define Constraints
-    # Inventory Balance
+    # 定义约束条件
+    # 库存平衡
     for ing in INGREDIENTS:
         for day in DAYS:
             if day == 0:
@@ -213,17 +213,17 @@ def solve_ordering_plan(demand, standard_costs, thursday_discount_rate, holding_
             else:
                 prob += inventory_vars[ing, day] == inventory_vars[ing, day-1] + order_vars[ing, day] - demand[ing][day], \
                         f"Inv_Balance_{ing}_Day_{day}"
-    # Ordering Restriction
+    # 订购限制
     for ing in INGREDIENTS:
         for day in NO_ORDER_DAYS:
             prob += order_vars[ing, day] == 0, f"No_Order_{ing}_Day_{day}"
 
-    # Solve the Problem
-    # Set a short timeout for the solver (e.g., 10 seconds)
+    # 求解问题
+    # 设置求解器的合理时间限制（10秒）
     solver = pulp.PULP_CBC_CMD(msg=0, timeLimit=10) 
     prob.solve(solver)
 
-    # Extract Results
+    # 提取结果
     results = {"status": pulp.LpStatus[prob.status]}
     if prob.status == pulp.LpStatusOptimal:
         results["total_cost"] = pulp.value(prob.objective)
@@ -550,21 +550,21 @@ def solve_ordering_plan(demand, standard_costs, thursday_discount_rate, holding_
 **实现代码**：
 ```python
 def create_new_drink(name, recipe):
-    """Add a new drink to the system with its recipe."""
-    # Add drink name to the list
+    """向系统中添加新饮品及其配方。"""
+    # 添加饮品名称到列表
     if name in DRINKS:
-        return False, f"Drink '{name}' already exists."
+        return False, f"饮品 '{name}' 已存在。"
     
-    # Add recipe for each ingredient
+    # 为每种原料添加配方
     for ing in INGREDIENTS:
         if ing not in KG_PER_DRINK:
             KG_PER_DRINK[ing] = {}
         KG_PER_DRINK[ing][name] = recipe[ing]
     
-    # Add the drink to the global list
+    # 将饮品添加到全局列表
     DRINKS.append(name)
     
-    return True, f"Drink '{name}' added successfully."
+    return True, f"饮品 '{name}' 添加成功。"
 
 # Streamlit UI实现
 with tab_new_drink:
@@ -624,7 +624,7 @@ with tab_new_drink:
 **实现代码**：
 ```python
 def apply_seasonal_factors(sales_data, seasonal_factors):
-    """Apply seasonal adjustment factors to sales data."""
+    """对销售数据应用季节性调整因子。"""
     adjusted_sales = deepcopy(sales_data)
     
     for drink in adjusted_sales:
@@ -636,10 +636,10 @@ def apply_seasonal_factors(sales_data, seasonal_factors):
 
 # Streamlit UI实现
 with tab_seasonal:
-    st.subheader("Seasonal Demand Adjustment")
-    st.write("Adjust daily demand by applying seasonal factors.")
+    st.subheader("季节性需求调整")
+    st.write("通过应用季节性因子调整每日需求。")
     
-    use_seasonal = st.checkbox("Enable Seasonal Adjustment", value=False, key="use_seasonal")
+    use_seasonal = st.checkbox("启用季节性调整", value=False, key="use_seasonal")
     
     if use_seasonal:
         st.write("Set multiplier factors for each day:")
@@ -883,7 +883,7 @@ if stockout_costs:
 ```python
 def run_sensitivity_analysis(base_demand, base_costs, parameter_name, values, current_value, 
                           holding_costs, thursday_discount=None):
-    """运行敏感性分析，通过改变一个参数并为每个值求解模型。"""
+    """通过改变一个参数并为每个值求解模型来运行敏感性分析。"""
     results = []
     
     for val in values:
@@ -893,13 +893,13 @@ def run_sensitivity_analysis(base_demand, base_costs, parameter_name, values, cu
                 base_demand, base_costs, val, holding_costs
             )
         elif parameter_name == 'holding_cost_factor':
-            # 按因子变更持有成本
+            # 通过因子变更持有成本
             modified_holding_costs = {ing: cost * val for ing, cost in holding_costs.items()}
             result = solve_ordering_plan(
                 base_demand, base_costs, thursday_discount, modified_holding_costs
             )
         elif parameter_name == 'demand_factor':
-            # 按因子变更需求
+            # 通过因子变更需求
             modified_demand = {}
             for ing in INGREDIENTS:
                 modified_demand[ing] = {day: base_demand[ing][day] * val for day in DAYS}
@@ -1030,10 +1030,10 @@ fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 5))
 
 # 成本类型明细
 ax1.pie([total_order_cost, total_inventory_cost], 
-        labels=['Order Cost', 'Holding Cost'],
+        labels=['订购成本', '持有成本'],
         autopct='%1.1f%%',
         colors=['#ff9999','#66b3ff'])
-ax1.set_title('Cost Type Breakdown')
+ax1.set_title('成本类型分布')
 
 # 原料成本明细
 ing_total_costs = {}
@@ -1044,25 +1044,25 @@ ax2.pie(ing_total_costs.values(),
         labels=ing_total_costs.keys(),
         autopct='%1.1f%%',
         colors=['#ff9999','#66b3ff','#99ff99','#ffcc99'])
-ax2.set_title('Cost by Ingredient')
+ax2.set_title('原料成本分布')
 
 plt.tight_layout()
 st.pyplot(fig)
 
 # 成本明细表
 cost_data = {
-    'Ingredient': INGREDIENTS,
-    'Order Cost ($)': [order_costs[ing] for ing in INGREDIENTS],
-    'Holding Cost ($)': [inventory_costs[ing] for ing in INGREDIENTS],
-    'Total Cost ($)': [order_costs[ing] + inventory_costs[ing] for ing in INGREDIENTS]
+    '原料': INGREDIENTS,
+    '订购成本 ($)': [order_costs[ing] for ing in INGREDIENTS],
+    '持有成本 ($)': [inventory_costs[ing] for ing in INGREDIENTS],
+    '总成本 ($)': [order_costs[ing] + inventory_costs[ing] for ing in INGREDIENTS]
 }
 cost_df = pd.DataFrame(cost_data)
-cost_df.loc['Total'] = ['', sum(cost_df['Order Cost ($)']), sum(cost_df['Holding Cost ($)']), sum(cost_df['Total Cost ($)'])]
+cost_df.loc['总计'] = ['', sum(cost_df['订购成本 ($)']), sum(cost_df['持有成本 ($)']), sum(cost_df['总成本 ($)'])]
 
 st.dataframe(cost_df.style.format({
-    'Order Cost ($)': '${:.2f}',
-    'Holding Cost ($)': '${:.2f}',
-    'Total Cost ($)': '${:.2f}'
+    '订购成本 ($)': '${:.2f}',
+    '持有成本 ($)': '${:.2f}',
+    '总成本 ($)': '${:.2f}'
 }))
 ```
 
