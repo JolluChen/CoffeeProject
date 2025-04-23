@@ -171,6 +171,67 @@ $$D_{i,d} = \sum_{j \in \text{饮品}} (S_{j,d} \times R_{i,j})$$
   - 设置合理的求解时间限制（10秒）
   - 优化约束条件表达，提高求解效率
 
+**核心实现代码**：
+
+```python
+def solve_ordering_plan(demand, standard_costs, thursday_discount_rate, holding_costs):
+    """Solves the LP model for material ordering using provided cost parameters."""
+
+    # Calculate Thursday costs based on the discount rate
+    thursday_costs = {k: v * (1 - thursday_discount_rate) for k, v in standard_costs.items()}
+
+    # Create effective cost dictionary: cost[ingredient][day]
+    effective_cost = {}
+    for ing in INGREDIENTS:
+        effective_cost[ing] = {}
+        for day in DAYS:
+            effective_cost[ing][day] = thursday_costs[ing] if day == 3 else standard_costs[ing]
+
+    # Create the minimization problem
+    prob = pulp.LpProblem("Material_Ordering_Plan", pulp.LpMinimize)
+
+    # Define Decision Variables
+    order_vars = pulp.LpVariable.dicts("Order",
+                                     ((ing, day) for ing in INGREDIENTS for day in DAYS),
+                                     lowBound=0, cat='Continuous')
+    inventory_vars = pulp.LpVariable.dicts("Inventory",
+                                         ((ing, day) for ing in INGREDIENTS for day in DAYS),
+                                         lowBound=0, cat='Continuous')
+
+    # Define Objective Function - using passed holding_costs and calculated effective_cost
+    prob += pulp.lpSum(effective_cost[ing][day] * order_vars[ing, day] for ing in INGREDIENTS for day in DAYS) + \
+            pulp.lpSum(holding_costs[ing] * inventory_vars[ing, day] for ing in INGREDIENTS for day in DAYS), \
+            "Total Cost"
+
+    # Define Constraints
+    # Inventory Balance
+    for ing in INGREDIENTS:
+        for day in DAYS:
+            if day == 0:
+                prob += inventory_vars[ing, day] == order_vars[ing, day] - demand[ing][day], \
+                        f"Inv_Balance_{ing}_Day_{day}"
+            else:
+                prob += inventory_vars[ing, day] == inventory_vars[ing, day-1] + order_vars[ing, day] - demand[ing][day], \
+                        f"Inv_Balance_{ing}_Day_{day}"
+    # Ordering Restriction
+    for ing in INGREDIENTS:
+        for day in NO_ORDER_DAYS:
+            prob += order_vars[ing, day] == 0, f"No_Order_{ing}_Day_{day}"
+
+    # Solve the Problem
+    # Set a short timeout for the solver (e.g., 10 seconds)
+    solver = pulp.PULP_CBC_CMD(msg=0, timeLimit=10) 
+    prob.solve(solver)
+
+    # Extract Results
+    results = {"status": pulp.LpStatus[prob.status]}
+    if prob.status == pulp.LpStatusOptimal:
+        results["total_cost"] = pulp.value(prob.objective)
+        # ... 提取订购计划和库存水平结果 ...
+    
+    return results
+```
+
 ### 3.4 智能决策逻辑
 
 系统的智能决策逻辑体现在：
@@ -486,6 +547,64 @@ $$D_{i,d} = \sum_{j \in \text{饮品}} (S_{j,d} \times R_{i,j})$$
    - 分析新产品对原材料需求和库存的影响
    - 评估新产品引入对总成本的影响
 
+**实现代码**：
+```python
+def create_new_drink(name, recipe):
+    """Add a new drink to the system with its recipe."""
+    # Add drink name to the list
+    if name in DRINKS:
+        return False, f"Drink '{name}' already exists."
+    
+    # Add recipe for each ingredient
+    for ing in INGREDIENTS:
+        if ing not in KG_PER_DRINK:
+            KG_PER_DRINK[ing] = {}
+        KG_PER_DRINK[ing][name] = recipe[ing]
+    
+    # Add the drink to the global list
+    DRINKS.append(name)
+    
+    return True, f"Drink '{name}' added successfully."
+
+# Streamlit UI实现
+with tab_new_drink:
+    st.subheader("Add New Drink Product")
+    st.write("Design a new drink by defining its ingredient recipe.")
+    
+    col1, col2 = st.columns([2, 3])
+    
+    with col1:
+        new_drink_name = st.text_input("New Drink Name", "")
+        
+    with col2:
+        st.write("Recipe (kg per drink):")
+        recipe_cols = st.columns(len(INGREDIENTS))
+        new_recipe = {}
+        for i, ing in enumerate(INGREDIENTS):
+            with recipe_cols[i]:
+                new_recipe[ing] = st.number_input(
+                    f"{ing}",
+                    min_value=0.000,
+                    value=0.010,
+                    step=0.001,
+                    format="%.3f",
+                    key=f"new_recipe_{ing}"
+                )
+    
+    if st.button("Add New Drink", key="add_drink_btn"):
+        if new_drink_name.strip():
+            success, message = create_new_drink(new_drink_name, new_recipe)
+            if success:
+                st.success(message)
+                # Force manual input mode after adding a new drink
+                st.session_state["force_manual_input"] = True
+                st.experimental_rerun()
+            else:
+                st.error(message)
+        else:
+            st.error("Please enter a name for the new drink.")
+```
+
 ![新产品设计](./fig/UI_Preview_Output.jpg)
 
 ### 7.2 季节性需求管理
@@ -502,6 +621,60 @@ $$D_{i,d} = \sum_{j \in \text{饮品}} (S_{j,d} \times R_{i,j})$$
    - 热力图形式直观呈现需求变化
    - 实时预览调整后的需求分布
 
+**实现代码**：
+```python
+def apply_seasonal_factors(sales_data, seasonal_factors):
+    """Apply seasonal adjustment factors to sales data."""
+    adjusted_sales = deepcopy(sales_data)
+    
+    for drink in adjusted_sales:
+        for day_idx, day_name in enumerate(DAY_NAMES):
+            factor = seasonal_factors.get(day_name, 1.0)
+            adjusted_sales[drink][day_idx] = int(adjusted_sales[drink][day_idx] * factor)
+            
+    return adjusted_sales
+
+# Streamlit UI实现
+with tab_seasonal:
+    st.subheader("Seasonal Demand Adjustment")
+    st.write("Adjust daily demand by applying seasonal factors.")
+    
+    use_seasonal = st.checkbox("Enable Seasonal Adjustment", value=False, key="use_seasonal")
+    
+    if use_seasonal:
+        st.write("Set multiplier factors for each day:")
+        seasonal_cols = st.columns(len(DAY_NAMES))
+        seasonal_factors = {}
+        
+        for i, day in enumerate(DAY_NAMES):
+            with seasonal_cols[i]:
+                seasonal_factors[day] = st.slider(
+                    f"{day}", 
+                    min_value=0.5, 
+                    max_value=2.0, 
+                    value=1.0, 
+                    step=0.05,
+                    key=f"seasonal_{day}"
+                )
+        
+        # Preview the effect
+        if st.button("Preview Adjusted Demand", key="preview_seasonal"):
+            base_sales = sales_to_use if use_predicted else {drink: edited_demand_df.loc[drink].values for drink in DRINKS}
+            adjusted_sales = apply_seasonal_factors(base_sales, seasonal_factors)
+            
+            # Show before/after comparison
+            col1, col2 = st.columns(2)
+            with col1:
+                st.write("Original Demand:")
+                original_df = pd.DataFrame({drink: base_sales[drink] for drink in base_sales}, index=DAY_NAMES).T
+                st.dataframe(original_df)
+            
+            with col2:
+                st.write("Adjusted Demand:")
+                adjusted_df = pd.DataFrame({drink: adjusted_sales[drink] for drink in adjusted_sales}, index=DAY_NAMES).T
+                st.dataframe(adjusted_df.style.background_gradient(axis=1, cmap="YlGn"))
+```
+
 ### 7.3 订购策略优化
 
 系统支持多种灵活的订购策略设置：
@@ -515,6 +688,64 @@ $$D_{i,d} = \sum_{j \in \text{饮品}} (S_{j,d} \times R_{i,j})$$
    - 为各原材料设置最小订购量阈值
    - 模拟供应商最小起订量要求
    - 避免频繁的小批量订购带来的额外成本
+
+**实现代码**：
+```python
+# Streamlit UI实现
+with tab_ordering_policy:
+    st.subheader("Ordering Policy Optimization")
+    st.write("Adjust ordering constraints to explore different policies.")
+    
+    policy_type = st.radio(
+        "Select Ordering Policy",
+        ["Standard (Tue & Fri No Orders)", "Custom Ordering Days", "Minimum Order Quantities"],
+        key="policy_type"
+    )
+    
+    ordering_days = None
+    min_order_quantities = None
+    
+    if policy_type == "Custom Ordering Days":
+        st.write("Select days when ordering is allowed:")
+        day_cols = st.columns(len(DAY_NAMES))
+        ordering_days = []
+        
+        for i, day in enumerate(DAY_NAMES):
+            with day_cols[i]:
+                if st.checkbox(day, value=(i not in NO_ORDER_DAYS), key=f"order_day_{i}"):
+                    ordering_days.append(i)
+        
+        if not ordering_days:
+            st.warning("You must select at least one ordering day.")
+    
+    elif policy_type == "Minimum Order Quantities":
+        st.write("Set minimum order quantities for each ingredient (kg):")
+        min_cols = st.columns(len(INGREDIENTS))
+        min_order_quantities = {}
+        
+        for i, ing in enumerate(INGREDIENTS):
+            with min_cols[i]:
+                min_order_quantities[ing] = st.number_input(
+                    ing, 
+                    min_value=0.0, 
+                    value=0.0, 
+                    step=0.5,
+                    key=f"min_order_{ing}"
+                )
+
+# 增强求解器中的相关实现
+if min_order_quantities and order_decision_vars:
+    for ing in INGREDIENTS:
+        min_qty = min_order_quantities.get(ing, 0)
+        if min_qty > 0:
+            for day in DAYS:
+                if day not in no_order_days_to_use:
+                    # If ordered, must be at least min_qty
+                    prob += order_vars[ing, day] <= 1000 * order_decision_vars[ing, day], \
+                            f"Order_Decision_Upper_{ing}_{day}"
+                    prob += order_vars[ing, day] >= min_qty * order_decision_vars[ing, day], \
+                            f"Min_Order_{ing}_{day}"
+```
 
 ### 7.4 过期风险管理
 
@@ -530,6 +761,48 @@ $$D_{i,d} = \sum_{j \in \text{饮品}} (S_{j,d} \times R_{i,j})$$
    - 考虑保质期因素的库存平衡策略
    - 针对不同保质期原料的差异化管理
 
+**实现代码**：
+```python
+# Streamlit UI实现
+with tab_expiry:
+    st.subheader("Ingredient Expiry Constraints")
+    st.write("Set expiry periods for ingredients to prevent waste.")
+    
+    use_expiry = st.checkbox("Enable Expiry Constraints", value=False, key="use_expiry")
+    
+    if use_expiry:
+        st.write("Set expiry period (days) for each ingredient:")
+        expiry_cols = st.columns(len(INGREDIENTS))
+        expiry_days = {}
+        
+        for i, ing in enumerate(INGREDIENTS):
+            with expiry_cols[i]:
+                expiry_days[ing] = st.slider(
+                    ing, 
+                    min_value=1, 
+                    max_value=7, 
+                    value=7,  # Default to 7 days (full week)
+                    key=f"expiry_{ing}"
+                )
+
+# 增强求解器中的过期约束实现
+if expiry_days:
+    # 针对设置了过期期限的原料，确保在期限内消耗完毕
+    for ing in INGREDIENTS:
+        max_days = expiry_days.get(ing)
+        if max_days and max_days > 0 and max_days < len(DAYS):
+            for start_day in range(len(DAYS) - max_days + 1):
+                end_day = start_day + max_days - 1
+                # 从start到end的订单总和必须等于该期间的需求总和
+                if end_day < len(DAYS):
+                    total_orders = pulp.lpSum(order_vars[ing, day] for day in range(start_day, end_day + 1))
+                    total_demand = pulp.lpSum(demand[ing][day] for day in range(start_day, end_day + 1))
+                    # 确保我们不会订购超过保质期内能消耗的量
+                    prob += total_orders <= total_demand + \
+                            (0 if start_day == 0 else inventory_vars[ing, start_day-1]), \
+                            f"Expiry_{ing}_StartDay_{start_day}_EndDay_{end_day}"
+```
+
 ### 7.5 缺货风险分析
 
 系统引入缺货成本考量，在库存成本与服务水平之间寻找最佳平衡：
@@ -543,6 +816,54 @@ $$D_{i,d} = \sum_{j \in \text{饮品}} (S_{j,d} \times R_{i,j})$$
    - 精确计算每日可能出现的缺货量
    - 缺货成本明细与总成本对比
    - 缺货风险可视化展示
+
+**实现代码**：
+```python
+# Streamlit UI实现
+with tab_stockout:
+    st.subheader("Stockout Cost Analysis")
+    st.write("Include stockout costs to analyze trade-offs between stockouts and inventory.")
+    
+    use_stockout = st.checkbox("Consider Stockout Costs", value=False, key="use_stockout")
+    
+    if use_stockout:
+        st.write("Set stockout penalty costs ($/kg/day):")
+        stockout_cols = st.columns(len(INGREDIENTS))
+        stockout_costs = {}
+        
+        for i, ing in enumerate(INGREDIENTS):
+            with stockout_cols[i]:
+                default_stockout = current_holding_costs[ing] * 10  # 默认为持有成本的10倍
+                stockout_costs[ing] = st.number_input(
+                    ing, 
+                    min_value=0.0, 
+                    value=default_stockout, 
+                    step=1.0,
+                    format="%.1f",
+                    key=f"stockout_{ing}"
+                )
+
+# 增强求解器中的缺货成本实现
+# 定义缺货变量
+if stockout_costs:
+    stockout_vars = pulp.LpVariable.dicts("Stockout",
+                                       ((ing, day) for ing in INGREDIENTS for day in DAYS),
+                                       lowBound=0, cat='Continuous')
+    
+    # 将缺货成本加入目标函数
+    obj_function += pulp.lpSum(stockout_costs[ing] * stockout_vars[ing, day]
+                            for ing in INGREDIENTS for day in DAYS)
+    
+    # 修改库存平衡约束，加入缺货变量
+    for ing in INGREDIENTS:
+        for day in DAYS:
+            if day == 0:
+                prob += inventory_vars[ing, day] - stockout_vars[ing, day] == \
+                        order_vars[ing, day] - demand[ing][day]
+            else:
+                prob += inventory_vars[ing, day] - stockout_vars[ing, day] == \
+                        inventory_vars[ing, day-1] + order_vars[ing, day] - demand[ing][day]
+```
 
 ### 7.6 敏感性分析工具
 
@@ -558,7 +879,117 @@ $$D_{i,d} = \sum_{j \in \text{饮品}} (S_{j,d} \times R_{i,j})$$
    - 详细的数据表格展示具体数值
    - 直观的结果标签显示每个数据点的精确值
 
-![敏感性分析](visualizations_cn/discount_sensitivity_cost.png)
+**实现代码**：
+```python
+def run_sensitivity_analysis(base_demand, base_costs, parameter_name, values, current_value, 
+                          holding_costs, thursday_discount=None):
+    """运行敏感性分析，通过改变一个参数并为每个值求解模型。"""
+    results = []
+    
+    for val in values:
+        if parameter_name == 'thursday_discount':
+            # 变更周四折扣率
+            result = solve_ordering_plan(
+                base_demand, base_costs, val, holding_costs
+            )
+        elif parameter_name == 'holding_cost_factor':
+            # 按因子变更持有成本
+            modified_holding_costs = {ing: cost * val for ing, cost in holding_costs.items()}
+            result = solve_ordering_plan(
+                base_demand, base_costs, thursday_discount, modified_holding_costs
+            )
+        elif parameter_name == 'demand_factor':
+            # 按因子变更需求
+            modified_demand = {}
+            for ing in INGREDIENTS:
+                modified_demand[ing] = {day: base_demand[ing][day] * val for day in DAYS}
+            result = solve_ordering_plan(
+                modified_demand, base_costs, thursday_discount, holding_costs
+            )
+            
+        if result["status"] == 'Optimal':
+            results.append((val, result["total_cost"]))
+        else:
+            results.append((val, None))
+            
+    return results
+
+# Streamlit UI实现
+with tab_sensitivity:
+    st.subheader("Sensitivity Analysis")
+    st.write("Analyze how changes in key parameters affect the optimal cost.")
+    
+    analysis_parameter = st.selectbox(
+        "Select Parameter to Analyze",
+        ["Thursday Discount Rate", "Holding Cost Factor", "Demand Factor"],
+        key="analysis_param"
+    )
+    
+    if analysis_parameter == "Thursday Discount Rate":
+        values = [0.0, 0.05, 0.10, 0.15, 0.20, 0.25, 0.30, 0.35]
+        st.write(f"Analyzing discount rates: {', '.join([f'{v*100:.0f}%' for v in values])}")
+        x_label = "Thursday Discount Rate"
+        param_name = "thursday_discount"
+        
+    elif analysis_parameter == "Holding Cost Factor":
+        values = [0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0]
+        st.write(f"Analyzing holding cost factors: {', '.join([str(v) for v in values])}")
+        x_label = "Holding Cost Factor"
+        param_name = "holding_cost_factor"
+        
+    else:  # Demand Factor
+        values = [0.8, 0.9, 1.0, 1.1, 1.2, 1.3]
+        st.write(f"Analyzing demand factors: {', '.join([str(v) for v in values])}")
+        x_label = "Demand Factor"
+        param_name = "demand_factor"
+    
+    if st.button("Run Sensitivity Analysis", key="run_sensitivity"):
+        # 运行敏感性分析
+        sensitivity_results = run_sensitivity_analysis(
+            base_demand, 
+            current_standard_costs,
+            param_name,
+            values,
+            current_thursday_discount_rate if param_name == "thursday_discount" else None,
+            current_holding_costs
+        )
+        
+        # 绘制结果
+        valid_results = [(x, y) for x, y in sensitivity_results if y is not None]
+        if valid_results:
+            x_vals, y_vals = zip(*valid_results)
+            
+            fig, ax = plt.subplots(figsize=(10, 6))
+            ax.plot(x_vals, y_vals, marker='o', linestyle='-', linewidth=2, markersize=8)
+            
+            if param_name == "thursday_discount":
+                ax.set_xlabel("Thursday Discount Rate")
+                x_tick_labels = [f"{x*100:.0f}%" for x in x_vals]
+                ax.set_xticklabels(x_tick_labels)
+            else:
+                ax.set_xlabel(x_label)
+                
+            ax.set_ylabel("Total Cost ($)")
+            ax.set_title(f"Sensitivity Analysis: Impact of {x_label} on Total Cost")
+            ax.grid(True, linestyle='--', alpha=0.7)
+            
+            # 添加数据标签
+            for x, y in zip(x_vals, y_vals):
+                ax.annotate(f"${y:.2f}", 
+                          (x, y),
+                          textcoords="offset points",
+                          xytext=(0,10), 
+                          ha='center')
+            
+            st.pyplot(fig)
+            
+            # 显示数据表格
+            result_df = pd.DataFrame({
+                x_label: x_vals,
+                "Total Cost": [f"${y:.2f}" for y in y_vals]
+            })
+            st.dataframe(result_df)
+```
 
 ### 7.7 成本构成分析
 
@@ -573,6 +1004,67 @@ $$D_{i,d} = \sum_{j \in \text{饮品}} (S_{j,d} \times R_{i,j})$$
    - 单一原料的订购成本、持有成本明细
    - 不同原料的成本贡献比较
    - 总成本构成与占比统计
+
+**实现代码**：
+```python
+# 计算成本明细
+order_costs = {}
+inventory_costs = {}
+
+for ing in INGREDIENTS:
+    order_costs[ing] = 0
+    for day_idx, day in enumerate(DAY_NAMES):
+        if enhanced_results["order_plan_df"].loc[ing, day] > 0:
+            cost_multiplier = 1.0 if day_idx != 3 else (1.0 - current_thursday_discount_rate)
+            order_costs[ing] += enhanced_results["order_plan_df"].loc[ing, day] * current_standard_costs[ing] * cost_multiplier
+    
+    inventory_costs[ing] = 0
+    for day in DAY_NAMES:
+        inventory_costs[ing] += enhanced_results["inventory_levels_df"].loc[ing, day] * current_holding_costs[ing]
+
+total_order_cost = sum(order_costs.values())
+total_inventory_cost = sum(inventory_costs.values())
+
+# 准备饼图数据
+fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 5))
+
+# 成本类型明细
+ax1.pie([total_order_cost, total_inventory_cost], 
+        labels=['Order Cost', 'Holding Cost'],
+        autopct='%1.1f%%',
+        colors=['#ff9999','#66b3ff'])
+ax1.set_title('Cost Type Breakdown')
+
+# 原料成本明细
+ing_total_costs = {}
+for ing in INGREDIENTS:
+    ing_total_costs[ing] = order_costs[ing] + inventory_costs[ing]
+
+ax2.pie(ing_total_costs.values(), 
+        labels=ing_total_costs.keys(),
+        autopct='%1.1f%%',
+        colors=['#ff9999','#66b3ff','#99ff99','#ffcc99'])
+ax2.set_title('Cost by Ingredient')
+
+plt.tight_layout()
+st.pyplot(fig)
+
+# 成本明细表
+cost_data = {
+    'Ingredient': INGREDIENTS,
+    'Order Cost ($)': [order_costs[ing] for ing in INGREDIENTS],
+    'Holding Cost ($)': [inventory_costs[ing] for ing in INGREDIENTS],
+    'Total Cost ($)': [order_costs[ing] + inventory_costs[ing] for ing in INGREDIENTS]
+}
+cost_df = pd.DataFrame(cost_data)
+cost_df.loc['Total'] = ['', sum(cost_df['Order Cost ($)']), sum(cost_df['Holding Cost ($)']), sum(cost_df['Total Cost ($)'])]
+
+st.dataframe(cost_df.style.format({
+    'Order Cost ($)': '${:.2f}',
+    'Holding Cost ($)': '${:.2f}',
+    'Total Cost ($)': '${:.2f}'
+}))
+```
 
 ## 8. 系统实现与技术细节
 
