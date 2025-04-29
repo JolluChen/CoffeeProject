@@ -226,14 +226,12 @@ This project is an intelligent inventory planning system developed for Amazing C
 ### 7.4 Main Results and Visualizations
 - **New Product Design Interface:**
 
-![New Product Design](fig/UI_Preview_Output.jpg)
+![UI_Preview](fig/UI_Preview.png)
 
 - **Various visualizations:** Sensitivity analysis, cost breakdown pie charts, inventory heatmaps, etc.
 - **Advanced feature area screenshots:**
 
-![Ordering Plan Visualization](visualizations_en/order_quantities.png)
-
-![Inventory Level Visualization](visualizations_en/inventory_levels.png)
+![New_feature](fig/New_feature.png)
 
 ### 7.5 Innovations & Highlights
 - Highly modular functions for easy extension.
